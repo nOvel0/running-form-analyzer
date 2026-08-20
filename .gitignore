@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+
+data/raw_videos/
+data/processed_videos/
+data/normalized_video/
+data/keypoints/
+data/reports/
