@@ -6,13 +6,15 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.signal import savgol_filter
 
-KNEE_LANDMARKS = [
+METRIC_LANDMARKS = [
     "LEFT_HIP",
     "LEFT_KNEE",
     "LEFT_ANKLE",
     "RIGHT_HIP",
     "RIGHT_KNEE",
     "RIGHT_ANKLE",
+    "LEFT_SHOULDER",
+    "RIGHT_SHOULDER",
 ]
 
 def parse_arg():
@@ -62,11 +64,11 @@ def prepare_frame_level_table(df: pd.DataFrame) -> pd.DataFrame:
         .drop_duplicates("frame_index")
         .copy()
     )
-    knee_df = df[
-        df["landmark_name"].isin(KNEE_LANDMARKS)
+    metrics_df = df[
+        df["landmark_name"].isin(METRIC_LANDMARKS)
     ].copy()
 
-    points = knee_df.pivot(
+    points = metrics_df.pivot(
         index="frame_index",
         columns="landmark_name",
         values=["x_px", "y_px", "is_valid_landmark"],
@@ -85,7 +87,7 @@ def prepare_frame_level_table(df: pd.DataFrame) -> pd.DataFrame:
 
     valid_columns = [
         f"{landmark}_is_valid_landmark"
-        for landmark in KNEE_LANDMARKS
+        for landmark in METRIC_LANDMARKS
     ]
 
     frame_df[valid_columns] = (
