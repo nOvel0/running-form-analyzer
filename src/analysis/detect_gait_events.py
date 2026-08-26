@@ -286,8 +286,18 @@ def find_stride_cadence(events_df: pd.DataFrame):
         "middle_frame",
         "end_frame",
         "start_timestamp_ms",
+        "middle_timestamp_ms",
         "end_timestamp_ms",
         "stride_duration_ms",
+        "start_source",
+        "middle_source",
+        "end_source",
+        "start_is_edge",
+        "middle_is_edge",
+        "end_is_edge",
+        "same_source",
+        "alternates_correctly",
+        "is_edge_cycle",
         "cadence_spm",
         "is_valid_stride_interval",
     ]
@@ -421,6 +431,45 @@ def find_stride_cadence(events_df: pd.DataFrame):
 
     return result.reset_index(drop=True)
 
+def stats(result: pd.DataFrame):
+    valid_cadence = result.loc[
+        result["is_high_quality"] == True,
+        "cadence_spm",
+    ]
+
+    if valid_cadence.empty:
+        print("High-quality циклы не найдены")
+        return
+
+    median_cadence = valid_cadence.median()
+
+    high_quality_count = len(valid_cadence)
+
+    q1 = valid_cadence.quantile(0.25)
+    q3 = valid_cadence.quantile(0.75)
+    iqr = q3 - q1
+
+    min_cad = valid_cadence.min()
+    max_cad = valid_cadence.max()
+
+    std_cadence = valid_cadence.std()
+
+    mean_cadence = valid_cadence.mean()
+
+    cv_percent = (
+        std_cadence / mean_cadence * 100
+    )
+
+    print(f"Каденс: {median_cadence:.1f}")
+    print(f"Качественных циклов: {high_quality_count}")
+    print(f"Q1(25%): {q1:.1f} spm")
+    print(f"Q3(75%): {q3:.1f} spm")
+    print(f"Центральные 50%: {q1:.1f}-{q3:.1f} spm")
+    print(f"IQR: {iqr:.1f} spm")
+    print(f"Диапазон: {min_cad:.1f} - {max_cad:.1f}") 
+    print(f"Стандартное отклонение: {std_cadence:.1f} spm")
+    print(f"Коэффициент вариации: {cv_percent:.1f}%")
+
 def main():
     args = parse_arg()
 
@@ -437,20 +486,15 @@ def main():
 
     result = detect_cadence_peaks(frame_table, fps=fps)
 
+    if result.empty:
+        raise ValueError("Пики не найдены")
+
     print(result.head())
 
     res_cadence = find_stride_cadence(result)
 
-    if res_cadence.isna().all().all():
-        raise ValueError("Нет найденых пиков")
-
-
-
-    high_quality_mask = (
-            res_cadence["is_valid_stride_interval"]
-            & res_cadence["alternates_correctly"]
-            & ~res_cadence["is_edge_cycle"]
-    )
+    if res_cadence.empty:
+        raise ValueError("Пики есть, полного цикла нет")
 
     res_cadence["is_high_quality"] = (
         res_cadence["is_valid_stride_interval"]
@@ -458,14 +502,9 @@ def main():
         & ~res_cadence["is_edge_cycle"]
     )
     
-    valid_cadence = res_cadence.loc[
-        high_quality_mask,
-        "cadence_spm",
-    ]
-    median_cadence = valid_cadence.median()
     print(res_cadence.head())
-    print(median_cadence)
     res_cadence.to_csv(str(csv_cycle_path), index=False)
+    stats(res_cadence)
 
     plot_diagnostic(frame_table, result, plot_path)
 
