@@ -431,7 +431,51 @@ def find_stride_cadence(events_df: pd.DataFrame):
 
     return result.reset_index(drop=True)
 
-def stats(result: pd.DataFrame, frame_df: pd.DataFrame):
+def stats_trunk_lean(frame_df: pd.DataFrame):
+    valid_trunk_lean = frame_df.loc[
+        frame_df["trunk_valid"]
+        & frame_df["forward_trunk_lean_deg"].notna(),
+        "forward_trunk_lean_deg",
+    ]
+
+    if valid_trunk_lean.empty:
+        print("Валидные значения наклона туловища не найдены")
+        return
+
+    median_trunk_lean = valid_trunk_lean.median()
+    quality_trunk_frame = len(valid_trunk_lean)
+
+    q1_trunk_lean = valid_trunk_lean.quantile(0.25)
+    q3_trunk_lean = valid_trunk_lean.quantile(0.75)
+    iqr_t = q3_trunk_lean - q1_trunk_lean
+
+    min_trunk_lean = valid_trunk_lean.min()
+    max_trunk_lean = valid_trunk_lean.max()
+
+    std_trunk_lean = valid_trunk_lean.std()
+    mean_trunk_lean = valid_trunk_lean.mean()
+
+    cv_percent_trunk_lean = (
+        std_trunk_lean / mean_trunk_lean * 100
+    )
+
+    val_direction = frame_df["running_direction"].iloc[0]
+
+    if val_direction == 1:
+        direction = "Вправо"
+    elif val_direction == -1:
+        direction = "Влево"
+    else:
+        direction = "Не определено"
+
+    print("\n")
+    print(f"Наклон туловища вперед: {median_trunk_lean:.1f}°")
+    print(f"Валидных кадров: {quality_trunk_frame}")
+    print(f"Центральные 50%: {q1_trunk_lean:.1f}°-{q3_trunk_lean:.1f}°")
+    print(f"Стандартное отклонение: {std_trunk_lean:.1f}°")
+    print(f"Направление бега: {direction}")
+
+def stats_cadence(result: pd.DataFrame):
     valid_cadence = result.loc[
         result["is_high_quality"] == True,
         "cadence_spm",
@@ -460,33 +504,7 @@ def stats(result: pd.DataFrame, frame_df: pd.DataFrame):
         std_cadence / mean_cadence * 100
     )
 
-    valid_trunk_lean = frame_df.loc[
-        frame_df["trunk_valid"]
-        & frame_df["forward_trunk_lean_deg"].notna(),
-        "forward_trunk_lean_deg",
-    ]
-
-    if valid_trunk_lean.empty:
-        print("Валидные значения наклона туловища не найдены")
-        return
-
-    median_trunk_lean = valid_trunk_lean.median()
-    quality_trunk_frame = len(valid_trunk_lean)
-
-    q1_trunk_lean = valid_trunk_lean.quantile(0.25)
-    q3_trunk_lean = valid_trunk_lean.quantile(0.75)
-    iqr_t = q3_trunk_lean - q1_trunk_lean
-
-    min_trunk_lean = valid_trunk_lean.min()
-    max_trunk_lean = valid_trunk_lean.max()
-
-    std_trunk_lean = valid_trunk_lean.std()
-    mean_trunk_lean = valid_trunk_lean.mean()
-
-    cv_percent_trunk_lean = (
-        std_trunk_lean / mean_trunk_lean * 100
-    )
-
+    print("\n")
     print(f"Каденс: {median_cadence:.1f}")
     print(f"Качественных циклов: {high_quality_count}")
     print(f"Q1(25%): {q1:.1f} spm")
@@ -496,16 +514,7 @@ def stats(result: pd.DataFrame, frame_df: pd.DataFrame):
     print(f"Диапазон: {min_cad:.1f} - {max_cad:.1f}") 
     print(f"Стандартное отклонение: {std_cadence:.1f} spm")
     print(f"Коэффициент вариации: {cv_percent:.1f}%")
-    print("\n")
-    print(f"Наклон туловища вперед: {median_trunk_lean:.1f}")
-    print(f"Валидных кадров: {quality_trunk_frame}")
-    print(f"Q1(25%): {q1_trunk_lean:.1f}")
-    print(f"Q3(75%): {q3_trunk_lean:.1f}")
-    print(f"Центральные 50%: {q1_trunk_lean:.1f}-{q3_trunk_lean:.1f}")
-    print(f"IQR: {iqr_t:.1f}")
-    print(f"Диапозон: {min_trunk_lean:.1f} - {max_trunk_lean:.1f}")
-    print(f"Стандартное отклонение: {std_trunk_lean:.1f}")
-    print(f"Коэффициент вариации: {cv_percent_trunk_lean:.1f}%")
+
 
 def main():
     args = parse_arg()
@@ -526,8 +535,6 @@ def main():
     if result.empty:
         raise ValueError("Пики не найдены")
 
-    print(result.head())
-
     res_cadence = find_stride_cadence(result)
 
     if res_cadence.empty:
@@ -538,10 +545,10 @@ def main():
         & res_cadence["alternates_correctly"]
         & ~res_cadence["is_edge_cycle"]
     )
-    
-    print(res_cadence.head())
+
     res_cadence.to_csv(str(csv_cycle_path), index=False)
-    stats(res_cadence, frame_table)
+    stats_cadence(res_cadence)
+    stats_trunk_lean(frame_table)
 
     plot_diagnostic(frame_table, result, plot_path)
 
