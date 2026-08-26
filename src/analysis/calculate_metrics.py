@@ -188,7 +188,7 @@ def new_column_angle(frame_df: pd.DataFrame) -> pd.DataFrame:
 
     return frame_df
 
-def plot_tank(frame_df: pd.DataFrame, plot_path: Path):
+def plot_trunk_lean(frame_df: pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
     plt.plot(
@@ -391,6 +391,12 @@ def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) ->
 
     frame_df["trunk_lean_image_deg"] = np.degrees(np.arctan2(dx, vertical_height))
 
+    frame_df.loc[
+            ~frame_df["trunk_valid"],
+            "trunk_lean_image_deg",
+        ] = np.nan
+    
+
     angle = frame_df["trunk_lean_image_deg"]
     frame_df["trunk_lean_magnitude_deg"] = angle.abs()
 
@@ -410,11 +416,23 @@ def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) ->
         "trunk_lean_image_direction",
     ] = "unknown"
 
-    frame_df.loc[
-        ~frame_df["trunk_valid"],
-        "trunk_lean_image_deg",
-    ] = np.nan
+    valid_hip_x = frame_df.loc[
+        frame_df["trunk_valid"],
+        "hip_center_x_px",
+    ]
 
+    start_x = valid_hip_x.head(10).median()
+    end_x = valid_hip_x.tail(10).median()
+
+    running_direction_sign = np.sign(end_x - start_x)
+
+    frame_df["forward_trunk_lean_deg"] = (
+        frame_df["trunk_lean_image_deg"]
+        * running_direction_sign
+    )
+
+    frame_df["running_direction"] = running_direction_sign
+    
     return frame_df
 
     
@@ -469,7 +487,7 @@ def main():
     ].max(axis=1)
     
     plot_angle(frame_df=frame_df, plot_path=plot_path)
-    plot_tank(frame_df=frame_df, plot_path=plot_path)
+    plot_trunk_lean(frame_df=frame_df, plot_path=plot_path)
 
     frame_df.to_csv(str(csv_frame_table_path), index=False)
 
