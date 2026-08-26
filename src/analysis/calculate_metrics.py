@@ -46,7 +46,7 @@ def parse_arg():
         "--plot",
         type=str,
         required=True,
-        help="Path to graphics"
+        help="Dir plot graphics"
     )
 
     return parser.parse_args()
@@ -188,6 +188,28 @@ def new_column_angle(frame_df: pd.DataFrame) -> pd.DataFrame:
 
     return frame_df
 
+def plot_tank(frame_df: pd.DataFrame, plot_path: Path):
+    plt.figure(figsize=(12, 6))
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["trunk_lean_image_deg"],
+        linewidth=1,
+        label="Наклон туловища, градусы",
+    )
+
+    plt.xlabel("Время, мс")
+    plt.ylabel("Наклон туловища, градусы")
+
+    plt.title("Наклон туловища относительно вертикали")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True)
+    plt.tight_layout()
+
+    plt.savefig(plot_path / "trunk_lean.png", dpi=300)
+
+    plt.close()
+
 def plot_angle(frame_df: pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
@@ -246,7 +268,7 @@ def plot_angle(frame_df: pd.DataFrame, plot_path: Path):
     plt.grid(True)
     plt.tight_layout()
 
-    plt.savefig(plot_path, dpi=300)
+    plt.savefig(plot_path / "angle.png", dpi=300)
 
     plt.close()
 
@@ -322,6 +344,79 @@ def smooth_continuous_segments(series: pd.Series, fps, window_ms=120, poly=2):
 
     return df["value"]
 
+
+def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) -> pd.DataFrame:
+    trunk_valid_columns = [
+        "LEFT_SHOULDER_is_valid_landmark",
+        "RIGHT_SHOULDER_is_valid_landmark",
+        "LEFT_HIP_is_valid_landmark",
+        "RIGHT_HIP_is_valid_landmark",
+    ]
+
+    frame_df["trunk_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df[trunk_valid_columns].all(axis=1)
+    )
+
+    frame_df["shoulder_center_x_px"] = (
+        frame_df["LEFT_SHOULDER_x_px"]
+        + frame_df["RIGHT_SHOULDER_x_px"]
+    ) / 2
+
+    frame_df["shoulder_center_y_px"] = (
+        frame_df["LEFT_SHOULDER_y_px"]
+        + frame_df["RIGHT_SHOULDER_y_px"]
+    ) / 2
+
+    frame_df["hip_center_x_px"] = (
+        frame_df["LEFT_HIP_x_px"]
+        + frame_df["RIGHT_HIP_x_px"]
+    ) / 2
+
+    frame_df["hip_center_y_px"] = (
+        frame_df["LEFT_HIP_y_px"]
+        + frame_df["RIGHT_HIP_y_px"]
+    ) / 2
+
+
+    dx = (
+        frame_df["shoulder_center_x_px"]
+        - frame_df["hip_center_x_px"]
+    )
+
+    vertical_height = (
+        frame_df["hip_center_y_px"]
+        - frame_df["shoulder_center_y_px"]
+    )
+
+    frame_df["trunk_lean_image_deg"] = np.degrees(np.arctan2(dx, vertical_height))
+
+    angle = frame_df["trunk_lean_image_deg"]
+    frame_df["trunk_lean_magnitude_deg"] = angle.abs()
+
+    frame_df["trunk_lean_image_direction"] = np.select(
+        [
+            angle > direction_threshold_deg,
+            angle < -direction_threshold_deg,
+        ],
+        [
+            "right",
+            "left",
+        ],
+        default="vertical"
+    )
+    frame_df.loc[
+        ~frame_df["trunk_valid"],
+        "trunk_lean_image_direction",
+    ] = "unknown"
+
+    frame_df.loc[
+        ~frame_df["trunk_valid"],
+        "trunk_lean_image_deg",
+    ] = np.nan
+
+    return frame_df
+
     
 def main():
     args = parse_arg()
@@ -330,6 +425,10 @@ def main():
     csv_meta_path = Path(args.metadata)
     csv_frame_table_path = Path(args.frame_table)
     plot_path = Path(args.plot)
+    plot_path.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     df = pd.read_csv(str(csv_path))
     df_meta = pd.read_csv(str(csv_meta_path))
@@ -344,6 +443,7 @@ def main():
 
     frame_df = prepare_frame_level_table(df)
     frame_df = new_column_angle(frame_df)
+    frame_df = calculate_trunk_lean(frame_df)
 
     # Заполняем короткие промежутки 
     values_right, mask_right = interpolate_short_gaps(frame_df["right_knee_flexion_raw"], fps)
@@ -369,6 +469,7 @@ def main():
     ].max(axis=1)
     
     plot_angle(frame_df=frame_df, plot_path=plot_path)
+    plot_tank(frame_df=frame_df, plot_path=plot_path)
 
     frame_df.to_csv(str(csv_frame_table_path), index=False)
 
