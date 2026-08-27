@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 
 from pathlib import Path
 from scipy.signal import savgol_filter
+from scipy.ndimage import median_filter
 
 METRIC_LANDMARKS = [
     "LEFT_HIP",
@@ -188,6 +189,64 @@ def new_column_angle(frame_df: pd.DataFrame) -> pd.DataFrame:
 
     return frame_df
 
+def plot_hip(frame_df: pd.DataFrame, plot_path: Path):
+    plt.figure(figsize=(12, 6))
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_hip_flexion_raw"],
+        linewidth=1,
+        label="Левое бедро raw",
+    )
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_hip_flexion_raw"],
+        linewidth=1,
+        label="Правое бедро raw",
+    )
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_hip_flexion_despiked"],
+        linewidth=1,
+        label="Левое бедро без шумов",
+    )
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_hip_flexion_despiked"],
+        linewidth=1,
+        label="Правое бедро без шумов",
+    )
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_hip_flexion_smooth"],
+        linewidth=1,
+        label="Левое бедро smooth",
+    )
+
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_hip_flexion_smooth"],
+        linewidth=1,
+        label="Правое бедро smooth",
+    )
+
+    plt.xlabel("Время, мс")
+    plt.ylabel("Угол бедра, градусы")
+
+    plt.title("Угол бедер относительно туловища")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True)
+    plt.tight_layout()
+
+    plt.savefig(plot_path / "hip.png", dpi=300)
+
+    plt.close()
+
+
 def plot_trunk_lean(frame_df: pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
@@ -344,6 +403,25 @@ def smooth_continuous_segments(series: pd.Series, fps, window_ms=120, poly=2):
 
     return df["value"]
 
+def smoothing_hip(series: pd.Series, window_median_filter=3):
+    df = pd.DataFrame({
+        "value": series
+    })
+    df["is_notna"] = df["value"].notna()
+    df["group_id"] = df["is_notna"].ne(df["is_notna"].shift()).cumsum()
+
+    for _, gap in df[df["is_notna"] == True].groupby("group_id"):
+        start_pos = df.index.get_loc(gap.index[0])
+        end_pos = df.index.get_loc(gap.index[-1])
+        values_slice = df["value"].iloc[start_pos : end_pos + 1]
+
+        filtered_signal = median_filter(values_slice, size=window_median_filter, mode="nearest")
+
+        value_col = df.columns.get_loc("value")
+
+        df.iloc[start_pos:end_pos + 1, value_col] = filtered_signal
+
+    return df["value"]
 
 def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) -> pd.DataFrame:
     trunk_valid_columns = [
@@ -435,6 +513,99 @@ def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) ->
     
     return frame_df
 
+def calculate_hip_flexion(frame_df: pd.DataFrame) -> pd.DataFrame:
+    hip_left_valid_columns = [
+        "LEFT_SHOULDER_is_valid_landmark",
+        "LEFT_HIP_is_valid_landmark",
+        "LEFT_KNEE_is_valid_landmark"
+    ]
+
+    hip_right_valid_columns = [
+        "RIGHT_SHOULDER_is_valid_landmark",
+        "RIGHT_HIP_is_valid_landmark",
+        "RIGHT_KNEE_is_valid_landmark"
+    ]
+
+    frame_df["left_hip_flexion_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df[hip_left_valid_columns].all(axis=1)
+    )
+    frame_df["right_hip_flexion_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df[hip_right_valid_columns].all(axis=1)
+    )
+
+    trunk_dx = (
+        frame_df["hip_center_x_px"]
+        - frame_df["shoulder_center_x_px"]
+    )
+
+    trunk_dy = (
+        frame_df["hip_center_y_px"]
+        - frame_df["shoulder_center_y_px"]
+    )
+
+    left_thigh_dx = (
+        frame_df["LEFT_KNEE_x_px"]
+        - frame_df["LEFT_HIP_x_px"]
+    )
+    right_thigh_dx = (
+        frame_df["RIGHT_KNEE_x_px"]
+        - frame_df["RIGHT_HIP_x_px"]
+    )
+
+    left_thigh_dy = (
+        frame_df["LEFT_KNEE_y_px"]
+        - frame_df["LEFT_HIP_y_px"]
+    )
+    right_thigh_dy = (
+        frame_df["RIGHT_KNEE_y_px"]
+        - frame_df["RIGHT_HIP_y_px"]
+    )
+
+    left_dot = (
+        trunk_dx * left_thigh_dx
+        + trunk_dy * left_thigh_dy
+    )
+    right_dot = (
+        trunk_dx * right_thigh_dx
+        + trunk_dy * right_thigh_dy
+    )
+
+    left_cross = (
+        trunk_dx * left_thigh_dy
+        - trunk_dy * left_thigh_dx
+    )
+    right_cross = (
+        trunk_dx * right_thigh_dy
+        - trunk_dy * right_thigh_dx
+    )
+
+    left_angle_image = np.degrees(
+        np.arctan2(left_cross, left_dot)
+    )
+    frame_df["left_hip_flexion_raw"] = (
+        -frame_df["running_direction"]
+        * left_angle_image
+    )
+    frame_df.loc[
+        ~frame_df["left_hip_flexion_valid"],
+        "left_hip_flexion_raw",
+    ] = np.nan
+
+    right_angle_image = np.degrees(
+        np.arctan2(right_cross, right_dot)
+    )
+    frame_df["right_hip_flexion_raw"] = (
+        -frame_df["running_direction"]
+        * right_angle_image
+    )
+    frame_df.loc[
+        ~frame_df["right_hip_flexion_valid"],
+        "right_hip_flexion_raw",
+    ] = np.nan
+
+    return frame_df
     
 def main():
     args = parse_arg()
@@ -462,6 +633,7 @@ def main():
     frame_df = prepare_frame_level_table(df)
     frame_df = new_column_angle(frame_df)
     frame_df = calculate_trunk_lean(frame_df)
+    frame_df = calculate_hip_flexion(frame_df)
 
     # Заполняем короткие промежутки 
     values_right, mask_right = interpolate_short_gaps(frame_df["right_knee_flexion_raw"], fps)
@@ -482,12 +654,33 @@ def main():
         fps=fps
     )
 
+    frame_df["left_hip_flexion_despiked"] = smoothing_hip(
+        frame_df["left_hip_flexion_raw"]
+    )
+    frame_df["right_hip_flexion_despiked"] = smoothing_hip(
+        frame_df["right_hip_flexion_raw"]
+    )
+
+    frame_df["left_hip_flexion_smooth"] = smooth_continuous_segments(
+        frame_df["left_hip_flexion_despiked"],
+        fps,
+        window_ms=80,
+        poly=2
+    )
+    frame_df["right_hip_flexion_smooth"] = smooth_continuous_segments(
+        frame_df["right_hip_flexion_despiked"],
+        fps,
+        window_ms=80,
+        poly=2
+    )
+
     frame_df["cadence_signal"] = frame_df[
         ["left_knee_flexion_smooth", "right_knee_flexion_smooth"]
     ].max(axis=1)
     
     plot_angle(frame_df=frame_df, plot_path=plot_path)
     plot_trunk_lean(frame_df=frame_df, plot_path=plot_path)
+    plot_hip(frame_df=frame_df, plot_path=plot_path)
 
     frame_df.to_csv(str(csv_frame_table_path), index=False)
 
