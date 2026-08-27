@@ -489,6 +489,131 @@ def knee_amplitude(cycle_df: pd.DataFrame, frame_df: pd.DataFrame):
 
     return cycle_df
 
+def calculate_hip_amplitude(frame_df: pd.DataFrame, start_timestamp_ms: int, end_timestamp_ms: int):
+    cycle_frames = frame_df.loc[
+        (frame_df["timestamp_ms"] >= start_timestamp_ms) &
+        (frame_df["timestamp_ms"] <= end_timestamp_ms)
+    ].copy()
+
+    left_signal = (
+        cycle_frames["left_hip_flexion_smooth"]
+        .dropna()
+    )
+    right_signal =(
+        cycle_frames["right_hip_flexion_smooth"]
+        .dropna()
+    )
+
+    if left_signal.empty or right_signal.empty:
+        return None
+
+    left_max_flexion = left_signal.max()
+    left_min_extension = left_signal.min()
+
+    right_max_flexion = right_signal.max()
+    right_min_extension = right_signal.min()
+
+    left_amplitude = left_max_flexion - left_min_extension
+    right_amplitude = right_max_flexion - right_min_extension
+
+    return {
+        "left_max_flexion" : left_max_flexion,
+        "left_min_extension" : left_min_extension,
+        "right_max_flexion" : right_max_flexion,
+        "right_min_extension" : right_min_extension,
+        "left_amplitude" : left_amplitude,
+        "right_amplitude" : right_amplitude,
+    }
+
+def hip_amplitude(cycle_df: pd.DataFrame, frame_df: pd.DataFrame):
+    quality_cycles = len(cycle_df)
+
+    for i in range(quality_cycles):
+        res_amp = calculate_hip_amplitude(
+            frame_df,
+            start_timestamp_ms=int(cycle_df["start_timestamp_ms"].iloc[i]),
+            end_timestamp_ms=int(cycle_df["end_timestamp_ms"].iloc[i]),
+        )
+
+        if res_amp is None:
+            continue
+
+        for key, value in res_amp.items():
+            cycle_df.loc[cycle_df.index[i], key] = value
+
+    return cycle_df
+
+def stats_hip_amplitude(cycle_df: pd.DataFrame):
+    valid_cycles = (
+        cycle_df.loc[cycle_df["is_high_quality"]]
+        .dropna(
+            subset=[
+                "left_max_flexion",
+                "left_min_extension",
+                "right_max_flexion",
+                "right_min_extension",
+                "left_amplitude",
+                "right_amplitude",
+            ]
+        )
+        .copy()
+    )
+
+    if valid_cycles.empty:
+        print("Валидные амплитуды бедер не найдены")
+        return
+
+    left_max_mean = valid_cycles["left_max_flexion"].mean()
+    left_min_mean = valid_cycles["left_min_extension"].mean()
+    left_amplitude_mean = valid_cycles["left_amplitude"].mean()
+
+    right_max_mean = valid_cycles["right_max_flexion"].mean()
+    right_min_mean = valid_cycles["right_min_extension"].mean()
+    right_amplitude_mean = valid_cycles["right_amplitude"].mean()
+
+    left_max_std = valid_cycles["left_max_flexion"].std()
+    left_min_std = valid_cycles["left_min_extension"].std()
+    left_amplitude_std = valid_cycles["left_amplitude"].std()
+
+    right_max_std = valid_cycles["right_max_flexion"].std()
+    right_min_std = valid_cycles["right_min_extension"].std()
+    right_amplitude_std = valid_cycles["right_amplitude"].std()
+
+    extension_diff = abs(abs(left_min_mean) - abs(right_min_mean))
+    flexion_diff = abs(abs(left_max_mean) - abs(right_max_mean))
+    rom_diff = abs(abs(left_amplitude_mean) - abs(right_amplitude_mean))
+
+    extension_percent = (
+        extension_diff /
+        ((abs(left_min_mean) + abs(right_min_mean)) / 2) * 100
+    )
+    flexion_percent = (
+        flexion_diff /
+        ((abs(left_max_mean) + abs(right_max_mean)) / 2) * 100
+    )
+    rom_percent = (
+        rom_diff /
+        ((abs(left_amplitude_mean) + abs(right_amplitude_mean)) / 2) * 100
+    )
+
+
+    print("\n")
+    print("Угол бедра относительно туловища")
+    print(f"Левая:")
+    print(f"  Макс. сгибание: {left_max_mean:.1f}° ± {left_max_std:.1f}°")
+    print(f"  Макс. разгибание: {left_min_mean:.1f}° ± {left_min_std:.1f}°")
+    print(f"  Амплитуда (ROM): {left_amplitude_mean:.1f}° ± {left_amplitude_std:.1f}°")
+    print("\n")
+    print(f"Правая:")
+    print(f"  Макс. сгибание: {right_max_mean:.1f}° ± {right_max_std:.1f}°")
+    print(f"  Макс. разгибание: {right_min_mean:.1f}° ± {right_min_std:.1f}°")
+    print(f"  Амплитуда (ROM): {right_amplitude_mean:.1f}° ± {right_amplitude_std:.1f}°")
+    print("\n")
+    print("Разница L/R:")
+    print(f"  Сгибание: {flexion_diff:.1f}° ({flexion_percent:.1f}%)")
+    print(f"  Разгибание: {extension_diff:.1f}° ({extension_percent:.1f}%)")
+    print(f"  (ROM): {rom_diff:.1f}° ({rom_percent:.1f}%)")
+    print(f"Качественных циклов с углами бедра: {len(valid_cycles)}")
 
 def stats_knee_amplitude(cycle_df: pd.DataFrame):
     valid_cycles = (
@@ -644,10 +769,12 @@ def main():
     )
 
     res_cadence = knee_amplitude(res_cadence, frame_table)
+    res_cadence = hip_amplitude(res_cadence, frame_table)
 
     stats_cadence(res_cadence)
     stats_trunk_lean(frame_table)
     stats_knee_amplitude(res_cadence)
+    stats_hip_amplitude(res_cadence)
 
     plot_diagnostic(frame_table, result, plot_path)
 
