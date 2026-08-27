@@ -431,6 +431,103 @@ def find_stride_cadence(events_df: pd.DataFrame):
 
     return result.reset_index(drop=True)
 
+def calculate_knee_amplitude_for_cycle(frame_df: pd.DataFrame, start_timestamp_ms: int, end_timestamp_ms: int):
+    cycle_frames = frame_df.loc[
+        (frame_df["timestamp_ms"] >= start_timestamp_ms) &
+        (frame_df["timestamp_ms"] <= end_timestamp_ms)
+    ].copy()
+
+    left_signal = (
+        cycle_frames["left_knee_flexion_smooth"]
+        .dropna()
+    )
+
+    right_signal = (
+        cycle_frames["right_knee_flexion_smooth"]
+        .dropna()
+    )
+
+    if left_signal.empty or right_signal.empty:
+        return None
+
+    left_amplitude = (
+        left_signal.max()
+        - left_signal.min()
+    )
+
+    right_amplitude = (
+        right_signal.max()
+        - right_signal.min()
+    )
+
+    amplitude_difference_deg = (
+        left_amplitude - right_amplitude
+    )
+
+    return {
+        "left_amplitude_deg": left_amplitude,
+        "right_amplitude_deg": right_amplitude,
+        "amplitude_difference_deg": amplitude_difference_deg,
+    }
+
+def knee_amplitude(cycle_df: pd.DataFrame, frame_df: pd.DataFrame):
+
+    quality_cycles = len(cycle_df)
+
+    for i in range(quality_cycles):
+        res_amp = calculate_knee_amplitude_for_cycle(
+            frame_df,
+            start_timestamp_ms=int(cycle_df["start_timestamp_ms"].iloc[i]),
+            end_timestamp_ms=int(cycle_df["end_timestamp_ms"].iloc[i]),
+        )
+
+        if res_amp is None:
+            continue
+
+        for key, value in res_amp.items():
+            cycle_df.loc[cycle_df.index[i], key] = value
+
+    return cycle_df
+
+
+def stats_knee_amplitude(cycle_df: pd.DataFrame):
+    valid_cycles = (
+        cycle_df.loc[cycle_df["is_high_quality"]]
+        .dropna(
+            subset=[
+                "left_amplitude_deg",
+                "right_amplitude_deg",
+                "amplitude_difference_deg",
+            ]
+        )
+        .copy()
+    )
+
+    if valid_cycles.empty:
+        print("Валидные амплитуды коленей не найдены")
+        return
+
+    left_knee_mean = valid_cycles["left_amplitude_deg"].mean()
+    right_knee_mean = valid_cycles["right_amplitude_deg"].mean()
+
+    left_knee_std = valid_cycles["left_amplitude_deg"].std()
+    right_knee_std = valid_cycles["right_amplitude_deg"].std()
+
+    asymetry_deg = valid_cycles["amplitude_difference_deg"].abs().median()
+
+    pos_count = (valid_cycles["amplitude_difference_deg"] > 0).sum()
+    neg_count = (valid_cycles["amplitude_difference_deg"] < 0).sum()
+
+    directional_count = pos_count + neg_count
+
+    print("\n")
+    print(f"Средняя амплитуда левого колена: {left_knee_mean:.1f}° ± {left_knee_std:.1f}° SD")
+    print(f"Средняя амплитуда правого колена: {right_knee_mean:.1f}° ± {right_knee_std:.1f}° SD")
+    print(f"Медианная разница амплитуд: {asymetry_deg:.1f}°")
+    print(f"Левая амплитуда больше: {pos_count} из {directional_count} циклов")
+    print(f"Правая амплитуда больше: {neg_count} из {directional_count} циклов")
+
+
 def stats_trunk_lean(frame_df: pd.DataFrame):
     valid_trunk_lean = frame_df.loc[
         frame_df["trunk_valid"]
@@ -546,13 +643,16 @@ def main():
         & ~res_cadence["is_edge_cycle"]
     )
 
-    res_cadence.to_csv(str(csv_cycle_path), index=False)
+    res_cadence = knee_amplitude(res_cadence, frame_table)
+
     stats_cadence(res_cadence)
     stats_trunk_lean(frame_table)
+    stats_knee_amplitude(res_cadence)
 
     plot_diagnostic(frame_table, result, plot_path)
 
     result.to_csv(str(csv_event_path), index=False)
+    res_cadence.to_csv(str(csv_cycle_path), index=False)
 
 if __name__ == "__main__":
     main()
