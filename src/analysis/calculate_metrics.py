@@ -514,25 +514,14 @@ def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) ->
     return frame_df
 
 def calculate_hip_flexion(frame_df: pd.DataFrame) -> pd.DataFrame:
-    hip_left_valid_columns = [
-        "LEFT_SHOULDER_is_valid_landmark",
-        "LEFT_HIP_is_valid_landmark",
-        "LEFT_KNEE_is_valid_landmark"
-    ]
-
-    hip_right_valid_columns = [
-        "RIGHT_SHOULDER_is_valid_landmark",
-        "RIGHT_HIP_is_valid_landmark",
-        "RIGHT_KNEE_is_valid_landmark"
-    ]
-
     frame_df["left_hip_flexion_valid"] = (
-        frame_df["is_valid_frame"]
-        & frame_df[hip_left_valid_columns].all(axis=1)
+        frame_df["trunk_valid"]
+        & frame_df["LEFT_KNEE_is_valid_landmark"]
     )
+
     frame_df["right_hip_flexion_valid"] = (
-        frame_df["is_valid_frame"]
-        & frame_df[hip_right_valid_columns].all(axis=1)
+        frame_df["trunk_valid"]
+        & frame_df["RIGHT_KNEE_is_valid_landmark"]
     )
 
     trunk_dx = (
