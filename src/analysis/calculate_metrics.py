@@ -16,6 +16,8 @@ METRIC_LANDMARKS = [
     "RIGHT_ANKLE",
     "LEFT_SHOULDER",
     "RIGHT_SHOULDER",
+    "LEFT_FOOT_INDEX",
+    "RIGHT_FOOT_INDEX",
 ]
 
 def parse_arg():
@@ -246,6 +248,33 @@ def plot_hip(frame_df: pd.DataFrame, plot_path: Path):
 
     plt.close()
 
+def plot_ankle(frame_df: pd.DataFrame, plot_path: Path):
+    plt.figure(figsize=(12, 6))
+    
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_ankle_angle_smooth"],
+        linewidth=1,
+        label="Левый голеностоп smooth",
+    )
+    plt.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_ankle_angle_smooth"],
+        linewidth=1,
+        label="Правый голеностоп smooth",
+    )
+
+    plt.xlabel("Время, мс")
+    plt.ylabel("Угол голеностопа, градусы")
+
+    plt.title("Изменения угла голеностопа в течение времени")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True)
+    plt.tight_layout()
+
+    plt.savefig(plot_path / "ankle.png", dpi=300)
+
+    plt.close()
 
 def plot_trunk_lean(frame_df: pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
@@ -269,7 +298,7 @@ def plot_trunk_lean(frame_df: pd.DataFrame, plot_path: Path):
 
     plt.close()
 
-def plot_angle(frame_df: pd.DataFrame, plot_path: Path):
+def plot_knee(frame_df: pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
     plt.plot(
@@ -403,7 +432,7 @@ def smooth_continuous_segments(series: pd.Series, fps, window_ms=120, poly=2):
 
     return df["value"]
 
-def smoothing_hip(series: pd.Series, window_median_filter=3):
+def smoothing_median_filter(series: pd.Series, window_median_filter=3):
     df = pd.DataFrame({
         "value": series
     })
@@ -595,7 +624,77 @@ def calculate_hip_flexion(frame_df: pd.DataFrame) -> pd.DataFrame:
     ] = np.nan
 
     return frame_df
-    
+
+def calculate_foot_flexion(frame_df: pd.DataFrame) -> pd.DataFrame:
+    left_foot_valid_columns = [
+        "LEFT_FOOT_INDEX_is_valid_landmark",
+        "LEFT_KNEE_is_valid_landmark",
+        "LEFT_ANKLE_is_valid_landmark",
+    ]
+    right_foot_valid_columns = [
+        "RIGHT_FOOT_INDEX_is_valid_landmark",
+        "RIGHT_KNEE_is_valid_landmark",
+        "RIGHT_ANKLE_is_valid_landmark"
+    ]
+
+    frame_df["left_ankle_angle_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df[left_foot_valid_columns].all(axis=1)
+    )
+
+    frame_df["right_ankle_angle_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df[right_foot_valid_columns].all(axis=1)
+    )
+
+    frame_df["left_ankle_angle_raw"] = frame_df.apply(
+        lambda row: calculate_angle(
+            A=[
+                row["LEFT_KNEE_x_px"],
+                row["LEFT_KNEE_y_px"],
+            ],
+            B=[
+                row["LEFT_ANKLE_x_px"],
+                row["LEFT_ANKLE_y_px"],
+            ],
+            C=[
+                row["LEFT_FOOT_INDEX_x_px"],
+                row["LEFT_FOOT_INDEX_y_px"],
+            ],
+        ),
+        axis=1,
+    )
+
+    frame_df["right_ankle_angle_raw"] = frame_df.apply(
+        lambda row: calculate_angle(
+            A=[
+                row["RIGHT_KNEE_x_px"],
+                row["RIGHT_KNEE_y_px"],
+            ],
+            B=[
+                row["RIGHT_ANKLE_x_px"],
+                row["RIGHT_ANKLE_y_px"],
+            ],
+            C=[
+                row["RIGHT_FOOT_INDEX_x_px"],
+                row["RIGHT_FOOT_INDEX_y_px"],
+            ],
+        ),
+        axis=1,
+    )
+
+    frame_df.loc[
+        ~frame_df["left_ankle_angle_valid"],
+        "left_ankle_angle_raw",
+    ] = np.nan
+
+    frame_df.loc[
+        ~frame_df["right_ankle_angle_valid"],
+        "right_ankle_angle_raw",
+    ] = np.nan
+
+    return frame_df
+
 def main():
     args = parse_arg()
 
@@ -623,6 +722,7 @@ def main():
     frame_df = new_column_angle(frame_df)
     frame_df = calculate_trunk_lean(frame_df)
     frame_df = calculate_hip_flexion(frame_df)
+    frame_df = calculate_foot_flexion(frame_df)
 
     # Заполняем короткие промежутки 
     values_right, mask_right = interpolate_short_gaps(frame_df["right_knee_flexion_raw"], fps)
@@ -643,12 +743,36 @@ def main():
         fps=fps
     )
 
-    frame_df["left_hip_flexion_despiked"] = smoothing_hip(
+    frame_df["left_hip_flexion_despiked"] = smoothing_median_filter(
         frame_df["left_hip_flexion_raw"]
     )
-    frame_df["right_hip_flexion_despiked"] = smoothing_hip(
+    frame_df["right_hip_flexion_despiked"] = smoothing_median_filter(
         frame_df["right_hip_flexion_raw"]
     )
+
+    frame_df["left_ankle_angle_despiked"] = smoothing_median_filter(
+        frame_df["left_ankle_angle_raw"],
+        window_median_filter=3,
+    )
+
+    frame_df["right_ankle_angle_despiked"] = smoothing_median_filter(
+        frame_df["right_ankle_angle_raw"],
+        window_median_filter=3,
+    )
+    frame_df["left_ankle_angle_smooth"] = smooth_continuous_segments(
+        frame_df["left_ankle_angle_despiked"],
+        fps,
+        window_ms=80,
+        poly=2,
+    )
+
+    frame_df["right_ankle_angle_smooth"] = smooth_continuous_segments(
+        frame_df["right_ankle_angle_despiked"],
+        fps,
+        window_ms=80,
+        poly=2,
+    )
+
 
     frame_df["left_hip_flexion_smooth"] = smooth_continuous_segments(
         frame_df["left_hip_flexion_despiked"],
@@ -667,9 +791,10 @@ def main():
         ["left_knee_flexion_smooth", "right_knee_flexion_smooth"]
     ].max(axis=1)
     
-    plot_angle(frame_df=frame_df, plot_path=plot_path)
+    plot_knee(frame_df=frame_df, plot_path=plot_path)
     plot_trunk_lean(frame_df=frame_df, plot_path=plot_path)
     plot_hip(frame_df=frame_df, plot_path=plot_path)
+    plot_ankle(frame_df=frame_df, plot_path=plot_path)
 
     frame_df.to_csv(str(csv_frame_table_path), index=False)
 

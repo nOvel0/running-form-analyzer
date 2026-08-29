@@ -489,6 +489,66 @@ def knee_amplitude(cycle_df: pd.DataFrame, frame_df: pd.DataFrame):
 
     return cycle_df
 
+def calculate_ankle_metrics_for_cycle(frame_df: pd.DataFrame, start_timestamp_ms: int, end_timestamp_ms: int):
+    cycle_frames = frame_df.loc[
+        (frame_df["timestamp_ms"] >= start_timestamp_ms) &
+        (frame_df["timestamp_ms"] <= end_timestamp_ms)
+    ].copy()
+
+    left_signal = (
+        cycle_frames["left_ankle_angle_smooth"]
+        .dropna()
+    )
+    right_signal = (
+        cycle_frames["right_ankle_angle_smooth"]
+        .dropna()
+    )
+
+    if left_signal.empty or right_signal.empty:
+        return None
+
+    left_min_angle = left_signal.min()
+    left_max_angle = left_signal.max()
+    left_rom = left_max_angle - left_min_angle
+
+    right_min_angle = right_signal.min()
+    right_max_angle = right_signal.max()
+    right_rom = right_max_angle - right_min_angle
+
+    left_coverage = len(left_signal) / len(cycle_frames)
+    right_coverage = len(right_signal) / len(cycle_frames)
+
+    if left_coverage < 0.8 or right_coverage < 0.8:
+        return None
+
+    return {
+        "left_ankle_min_angle_deg": left_min_angle,
+        "left_ankle_max_angle_deg": left_max_angle,
+        "left_ankle_rom_deg": left_rom,
+
+        "right_ankle_min_angle_deg": right_min_angle,
+        "right_ankle_max_angle_deg": right_max_angle,
+        "right_ankle_rom_deg": right_rom,
+    }
+
+def ankle_metrics(cycle_df: pd.DataFrame, frame_df: pd.DataFrame):
+    quality_cycles = len(cycle_df)
+
+    for i in range(quality_cycles):
+        res_amp = calculate_ankle_metrics_for_cycle(
+            frame_df,
+            start_timestamp_ms=int(cycle_df["start_timestamp_ms"].iloc[i]),
+            end_timestamp_ms=int(cycle_df["end_timestamp_ms"].iloc[i]),
+        )
+
+        if res_amp is None:
+            continue
+
+        for key, value in res_amp.items():
+            cycle_df.loc[cycle_df.index[i], key] = value
+    
+    return cycle_df
+
 def calculate_hip_amplitude(frame_df: pd.DataFrame, start_timestamp_ms: int, end_timestamp_ms: int):
     cycle_frames = frame_df.loc[
         (frame_df["timestamp_ms"] >= start_timestamp_ms) &
@@ -614,6 +674,80 @@ def stats_hip_amplitude(cycle_df: pd.DataFrame):
     print(f"  Разгибание: {extension_diff:.1f}° ({extension_percent:.1f}%)")
     print(f"  (ROM): {rom_diff:.1f}° ({rom_percent:.1f}%)")
     print(f"Качественных циклов с углами бедра: {len(valid_cycles)}")
+
+def stats_ankle_metrics(cycle_df: pd.DataFrame):
+    valid_cycles = (
+        cycle_df.loc[cycle_df["is_high_quality"]]
+        .dropna(
+            subset=[
+                "left_ankle_min_angle_deg",
+                "left_ankle_max_angle_deg",
+                "left_ankle_rom_deg",
+                "right_ankle_min_angle_deg",
+                "right_ankle_max_angle_deg",
+                "right_ankle_rom_deg",
+            ]
+        )
+        .copy()
+    )
+
+    if valid_cycles.empty:
+        print("Валидные метрики голеностопа не найдены")
+        return
+
+    valid_count = len(valid_cycles)
+
+    left_min_mean = valid_cycles["left_ankle_min_angle_deg"].mean()
+    right_min_mean = valid_cycles["right_ankle_min_angle_deg"].mean()
+
+    left_max_mean = valid_cycles["left_ankle_max_angle_deg"].mean()
+    right_max_mean = valid_cycles["right_ankle_max_angle_deg"].mean()
+
+    left_rom_mean = valid_cycles["left_ankle_rom_deg"].mean()
+    right_rom_mean = valid_cycles["right_ankle_rom_deg"].mean()
+
+    left_min_std = valid_cycles["left_ankle_min_angle_deg"].std()
+    right_min_std = valid_cycles["right_ankle_min_angle_deg"].std()
+
+    left_max_std = valid_cycles["left_ankle_max_angle_deg"].std()
+    right_max_std = valid_cycles["right_ankle_max_angle_deg"].std()
+
+    left_rom_std = valid_cycles["left_ankle_rom_deg"].std()
+    right_rom_std = valid_cycles["right_ankle_rom_deg"].std()
+
+    rom_difference = (
+        valid_cycles["left_ankle_rom_deg"]
+        - valid_cycles["right_ankle_rom_deg"]
+    )
+
+    median_rom_difference = rom_difference.abs().median()
+
+    rom_asymmetry_percent = (
+        rom_difference.abs()
+        / (
+            (
+                valid_cycles["left_ankle_rom_deg"]
+                + valid_cycles["right_ankle_rom_deg"]
+            ) / 2
+        )
+        * 100
+    ).median()
+
+    print("\n")
+    print("Голеностопный угол")
+    print(f"Качественных циклов с валидным сигналом: {valid_count}")
+    print("\n")
+    print("Левый:")
+    print(f"  Минимальный угол: {left_min_mean:.1f}° ± {left_min_std:.1f}° SD")
+    print(f"  Максимальный угол: {left_max_mean:.1f}° ± {left_max_std:.1f}° SD")
+    print(f"  Амплитуда (ROM): {left_rom_mean:.1f}° ± {left_rom_std:.1f}° SD")
+    print("\n")
+    print("Правый:")
+    print(f"  Минимальный угол: {right_min_mean:.1f}° ± {right_min_std:.1f}° SD")
+    print(f"  Максимальный угол: {right_max_mean:.1f}° ± {right_max_std:.1f}° SD")
+    print(f"  Амплитуда (ROM): {right_rom_mean:.1f}° ± {right_rom_std:.1f}° SD")
+    print(f"\nМедианная разница ROM: {median_rom_difference:.1f}°")
+    print(f"Асимметрия ROM: {rom_asymmetry_percent:.1f}%")
 
 def stats_knee_amplitude(cycle_df: pd.DataFrame):
     valid_cycles = (
@@ -770,11 +904,13 @@ def main():
 
     res_cadence = knee_amplitude(res_cadence, frame_table)
     res_cadence = hip_amplitude(res_cadence, frame_table)
+    res_cadence = ankle_metrics(res_cadence, frame_table)
 
     stats_cadence(res_cadence)
     stats_trunk_lean(frame_table)
     stats_knee_amplitude(res_cadence)
     stats_hip_amplitude(res_cadence)
+    stats_ankle_metrics(res_cadence)
 
     plot_diagnostic(frame_table, result, plot_path)
 
