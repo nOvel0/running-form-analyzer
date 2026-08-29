@@ -18,6 +18,8 @@ METRIC_LANDMARKS = [
     "RIGHT_SHOULDER",
     "LEFT_FOOT_INDEX",
     "RIGHT_FOOT_INDEX",
+    "LEFT_HEEL",
+    "RIGHT_HEEL",
 ]
 
 def parse_arg():
@@ -298,6 +300,60 @@ def plot_trunk_lean(frame_df: pd.DataFrame, plot_path: Path):
 
     plt.close()
 
+def plot_foot_IC_TO(frame_df: pd.DataFrame, plot_path: Path):
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(8, 6))
+
+    ax1.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_foot_ahead_norm"],
+        label="Левая стопа",
+    )
+    ax1.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_foot_ahead_norm"],
+        label="Правая стопа",
+    )
+    ax1.set_title("Первый график (стопа впереди таза)")
+    ax1.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax1.grid(True)
+
+    ax2.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_foot_low_norm"],
+        label="Левая стопа"
+    )
+    ax2.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_foot_low_norm"],
+        label="Правая стопа"
+    )
+    ax2.set_title("Второй график (стопа находится низко)")
+    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax2.grid(True)
+    
+
+    ax3.plot(
+        frame_df["timestamp_ms"],
+        frame_df["left_foot_speed_norm_s"],
+        label="Левая стопа"
+    )
+    ax3.plot(
+        frame_df["timestamp_ms"],
+        frame_df["right_foot_speed_norm_s"],
+        label="Правая стопа"
+    )
+    ax3.set_title("Третий график: (скорость стопы)")
+    ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    ax3.grid(True)
+    
+
+    plt.tight_layout()
+    plt.grid(True)
+
+    plt.savefig(plot_path / "IC_TO.png", dpi=300)
+
+    plt.close(fig)
+    
 def plot_knee(frame_df: pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
@@ -625,6 +681,164 @@ def calculate_hip_flexion(frame_df: pd.DataFrame) -> pd.DataFrame:
 
     return frame_df
 
+def calculate_foot_event_signals(frame_df: pd.DataFrame, fps) -> pd.DataFrame:
+    frame_df["left_foot_signal_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df["left_ankle_angle_valid"]
+        & frame_df["LEFT_HEEL_is_valid_landmark"]
+        & frame_df["LEFT_HIP_is_valid_landmark"]
+        & frame_df["RIGHT_HIP_is_valid_landmark"]
+    )
+    frame_df["right_foot_signal_valid"] = (
+        frame_df["is_valid_frame"]
+        & frame_df["right_ankle_angle_valid"]
+        & frame_df["RIGHT_HEEL_is_valid_landmark"]
+        & frame_df["RIGHT_HIP_is_valid_landmark"]
+        & frame_df["LEFT_HIP_is_valid_landmark"]
+    )
+
+    left_foot_center_x_px = (
+        frame_df["LEFT_HEEL_x_px"]
+        + frame_df["LEFT_FOOT_INDEX_x_px"]
+    ) / 2
+    left_foot_center_y_px = (
+        frame_df["LEFT_HEEL_y_px"]
+        + frame_df["LEFT_FOOT_INDEX_y_px"]
+    ) / 2
+
+    right_foot_center_x_px = (
+        frame_df["RIGHT_HEEL_x_px"]
+        + frame_df["RIGHT_FOOT_INDEX_x_px"]
+    ) / 2
+    right_foot_center_y_px = (
+        frame_df["RIGHT_HEEL_y_px"]
+        + frame_df["RIGHT_FOOT_INDEX_y_px"]
+    ) / 2
+
+    left_foot_center_x_px = left_foot_center_x_px.where(
+        frame_df["left_foot_signal_valid"]
+    )
+    left_foot_center_y_px = left_foot_center_y_px.where(
+        frame_df["left_foot_signal_valid"]
+    )
+    right_foot_center_x_px = right_foot_center_x_px.where(
+        frame_df["right_foot_signal_valid"]
+    )
+    right_foot_center_y_px = right_foot_center_y_px.where(
+        frame_df["right_foot_signal_valid"]
+    )
+
+    left_thigh_length = np.hypot(
+        frame_df["LEFT_KNEE_x_px"] - frame_df["LEFT_HIP_x_px"],
+        frame_df["LEFT_KNEE_y_px"] - frame_df["LEFT_HIP_y_px"],
+    )
+    left_shin_length = np.hypot(
+        frame_df["LEFT_ANKLE_x_px"] - frame_df["LEFT_KNEE_x_px"],
+        frame_df["LEFT_ANKLE_y_px"] - frame_df["LEFT_KNEE_y_px"],
+    )
+    left_leg_length = left_thigh_length + left_shin_length
+
+    right_thigh_length = np.hypot(
+        frame_df["RIGHT_KNEE_x_px"] - frame_df["RIGHT_HIP_x_px"],
+        frame_df["RIGHT_KNEE_y_px"] - frame_df["RIGHT_HIP_y_px"],
+    )
+    right_shin_length = np.hypot(
+        frame_df["RIGHT_ANKLE_x_px"] - frame_df["RIGHT_KNEE_x_px"],
+        frame_df["RIGHT_ANKLE_y_px"] - frame_df["RIGHT_KNEE_y_px"],
+    )
+    right_leg_length = right_thigh_length + right_shin_length
+
+    left_leg_scale_px = smoothing_median_filter(left_leg_length, window_median_filter=3)
+    right_leg_scale_px = smoothing_median_filter(right_leg_length, window_median_filter=3)
+
+    left_leg_scale_px = (
+        left_leg_scale_px
+        .where(frame_df["left_foot_signal_valid"])
+        .median()
+    )
+    right_leg_scale_px = (
+        right_leg_scale_px
+        .where(frame_df["right_foot_signal_valid"])
+        .median()
+    )
+
+    # стопа впереди таза
+    frame_df["left_foot_ahead_norm"] = (
+        frame_df["running_direction"]
+        * (
+            left_foot_center_x_px
+            - frame_df["hip_center_x_px"]
+        )
+        / left_leg_scale_px
+    ).where(frame_df["left_foot_signal_valid"])
+    frame_df["right_foot_ahead_norm"] = (
+        frame_df["running_direction"]
+        * (
+            right_foot_center_x_px
+            - frame_df["hip_center_x_px"]
+        )
+        / right_leg_scale_px
+    ).where(frame_df["right_foot_signal_valid"])
+
+    # стопа находится низко
+    left_foot_lowest_y_px = np.maximum(
+        frame_df["LEFT_HEEL_y_px"],
+        frame_df["LEFT_FOOT_INDEX_y_px"],
+    ) 
+    frame_df["left_foot_low_norm"] = (
+        left_foot_lowest_y_px
+        - frame_df["hip_center_y_px"]
+    ) / left_leg_scale_px
+
+    right_foot_lowest_y_px = np.maximum(
+        frame_df["RIGHT_HEEL_y_px"],
+        frame_df["RIGHT_FOOT_INDEX_y_px"],
+    ) 
+    frame_df["right_foot_low_norm"] = (
+        right_foot_lowest_y_px
+        - frame_df["hip_center_y_px"]
+    ) / right_leg_scale_px
+
+    # скорость стопы
+    dt_s = frame_df["timestamp_ms"].diff() / 1000
+
+    left_foot_center_x_smooth = smooth_continuous_segments(smoothing_median_filter(left_foot_center_x_px, window_median_filter=3), fps)
+    right_foot_center_x_smooth = smooth_continuous_segments(smoothing_median_filter(right_foot_center_x_px, window_median_filter=3), fps)
+    left_foot_center_y_smooth = smooth_continuous_segments(smoothing_median_filter(left_foot_center_y_px, window_median_filter=3), fps)
+    right_foot_center_y_smooth = smooth_continuous_segments(smoothing_median_filter(right_foot_center_y_px, window_median_filter=3), fps)
+    
+    left_foot_vx_px_s = (
+        left_foot_center_x_smooth.diff() / dt_s
+    )
+    left_foot_vy_px_s = (
+        left_foot_center_y_smooth.diff() / dt_s
+    )
+
+    right_foot_vx_px_s = (
+        right_foot_center_x_smooth.diff() / dt_s
+    )
+    right_foot_vy_px_s = (
+        right_foot_center_y_smooth.diff() / dt_s
+    )
+
+    frame_df["left_foot_speed_norm_s"] = (
+        np.sqrt(
+            left_foot_vx_px_s**2
+            + left_foot_vy_px_s**2
+        )
+        / left_leg_scale_px
+    )
+    frame_df["right_foot_speed_norm_s"] = (
+        np.sqrt(
+            right_foot_vx_px_s**2
+            + right_foot_vy_px_s**2
+        )
+        / right_leg_scale_px
+    )
+
+    return frame_df
+        
+
 def calculate_foot_flexion(frame_df: pd.DataFrame) -> pd.DataFrame:
     left_foot_valid_columns = [
         "LEFT_FOOT_INDEX_is_valid_landmark",
@@ -723,6 +937,7 @@ def main():
     frame_df = calculate_trunk_lean(frame_df)
     frame_df = calculate_hip_flexion(frame_df)
     frame_df = calculate_foot_flexion(frame_df)
+    frame_df = calculate_foot_event_signals(frame_df, fps)
 
     # Заполняем короткие промежутки 
     values_right, mask_right = interpolate_short_gaps(frame_df["right_knee_flexion_raw"], fps)
@@ -795,6 +1010,7 @@ def main():
     plot_trunk_lean(frame_df=frame_df, plot_path=plot_path)
     plot_hip(frame_df=frame_df, plot_path=plot_path)
     plot_ankle(frame_df=frame_df, plot_path=plot_path)
+    plot_foot_IC_TO(frame_df=frame_df, plot_path=plot_path)
 
     frame_df.to_csv(str(csv_frame_table_path), index=False)
 

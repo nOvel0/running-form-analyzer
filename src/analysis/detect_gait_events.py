@@ -43,6 +43,12 @@ def parse_arg():
         required=True,
         help="Path to output cycle and cadence csv file"
     )
+    parser.add_argument(
+        "--contact_foot",
+        type=str,
+        required=True,
+        help="Path to output contact foot csv file"
+    )
 
     return parser.parse_args()
 
@@ -202,6 +208,107 @@ def detect_cadence_peaks(frame_table : pd.DataFrame, fps, distance_s=0.273, prom
 
     return result
 
+def detect_initial_contacts(
+        frame_table: pd.DataFrame,
+        side: str,
+        fps: float,
+        cadence_spm: float,
+        prominence: float = 0.2,
+) -> pd.DataFrame:
+    if side not in ("left", "right"):
+        raise ValueError("side должен быть left или right")
+
+    signal_column = f"{side}_foot_ahead_norm"
+
+    expected_stride_frames = (
+        fps * 120 / cadence_spm
+    )
+    min_distance_frames = round(
+        expected_stride_frames * 0.6
+    )
+
+    df = frame_table.copy()
+
+    df["has_value"] = df[signal_column].notna()
+    df["group_id"] = (
+        df["has_value"]
+        .ne(df["has_value"].shift())
+        .cumsum()
+    )
+
+    result_parts = []
+
+    for _, segment in df[df["has_value"]].groupby("group_id"):
+        peak_positions, properties = find_peaks(
+            segment[signal_column].to_numpy(),
+            distance=min_distance_frames,
+            prominence=prominence,
+        )
+
+        peak_rows = segment.iloc[peak_positions]
+
+        result_parts.append(
+            pd.DataFrame({
+                "side": side,
+                "event_type": "initial_contact_candidate",
+                "frame_index": peak_rows["frame_index"].to_numpy(),
+                "timestamp_ms": peak_rows["timestamp_ms"].to_numpy(),
+                "foot_ahead_norm": peak_rows[signal_column].to_numpy(),
+                "prominence": properties["prominences"],
+            })
+        )
+
+    if not result_parts:
+        return pd.DataFrame(columns=[
+            "side",
+            "event_type",
+            "frame_index",
+            "timestamp_ms",
+            "foot_ahead_norm",
+            "prominence",
+        ])
+
+    return pd.concat(result_parts, ignore_index=True)
+
+def build_initial_contact_candidates(res_cadence: pd.DataFrame, frame_df: pd.DataFrame, fps):
+    cadence_spm = (
+        res_cadence.loc[
+            res_cadence["is_high_quality"],
+            "cadence_spm",
+        ]
+        .median()
+    )
+
+    if pd.isna(cadence_spm):
+        raise ValueError(
+            "Невозможно определить IC: нет качественного значения каденса"
+        )
+
+    left_contacts = detect_initial_contacts(
+        frame_df,
+        side="left",
+        fps=fps,
+        cadence_spm=cadence_spm,
+    )
+
+    right_contacts = detect_initial_contacts(
+        frame_df,
+        side="right",
+        fps=fps,
+        cadence_spm=cadence_spm,
+    )
+
+    contact_candidates = (
+        pd.concat(
+            [left_contacts, right_contacts],
+            ignore_index=True,
+        )
+        .sort_values("frame_index")
+        .reset_index(drop=True)
+    )
+
+    return contact_candidates
+    
 def plot_diagnostic(frame_df : pd.DataFrame, events_df : pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
@@ -880,6 +987,7 @@ def main():
     csv_event_path = Path(args.events)
     plot_path = Path(args.plot)
     csv_cycle_path = Path(args.cycle)
+    csv_contact_path = Path(args.contact_foot)
 
     frame_table = pd.read_csv(str(csv_path))
     df_meta = pd.read_csv(str(csv_meta_path))
@@ -905,6 +1013,7 @@ def main():
     res_cadence = knee_amplitude(res_cadence, frame_table)
     res_cadence = hip_amplitude(res_cadence, frame_table)
     res_cadence = ankle_metrics(res_cadence, frame_table)
+    contact_candidates = build_initial_contact_candidates(res_cadence, frame_table, fps)
 
     stats_cadence(res_cadence)
     stats_trunk_lean(frame_table)
@@ -916,6 +1025,7 @@ def main():
 
     result.to_csv(str(csv_event_path), index=False)
     res_cadence.to_csv(str(csv_cycle_path), index=False)
+    contact_candidates.to_csv(str(csv_contact_path), index=False)
 
 if __name__ == "__main__":
     main()
