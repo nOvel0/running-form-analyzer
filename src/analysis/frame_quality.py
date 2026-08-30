@@ -6,7 +6,6 @@ from pathlib import Path
 EXPECTED_LANDMARKS_COUNT = 33
 LEGS_LIST_LEFT = ["LEFT_KNEE", "LEFT_ANKLE", "LEFT_HEEL", "LEFT_FOOT_INDEX", "LEFT_HIP"]
 LEGS_LIST_RIGHT = ["RIGHT_KNEE", "RIGHT_ANKLE", "RIGHT_HEEL", "RIGHT_FOOT_INDEX", "RIGHT_HIP"]
-MIN_MEDIAN_ABS_HIP_DX = 0.003
 MIN_HIP_X_DISPLACEMENT = 0.05
 MIN_HIP_X_RANGE = 0.1
 
@@ -203,7 +202,6 @@ def detect_runner(hips_df: pd.DataFrame):
             "hip_x_end" : hip_x_end,
             "hip_x_displacement" : abs(hip_x_end - hip_x_start),
             "hip_x_range" : segment["hip_center_x"].max() - segment["hip_center_x"].min(),
-            "median_abs_hip_dx" : segment["hip_center_x"].diff().abs().median(),
             "is_runner_segment": segment["is_runner_segment"].iloc[0]
         }]    
         )
@@ -301,6 +299,10 @@ def main():
     df.loc[df["is_runner_segment"] == False, "is_valid_frame"] = 0
     stats(df)
 
+    csv_path_out.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     df.to_csv(str(csv_path_out), index=False)
 
 

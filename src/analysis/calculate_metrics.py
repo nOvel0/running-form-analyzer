@@ -508,7 +508,7 @@ def smoothing_median_filter(series: pd.Series, window_median_filter=3):
 
     return df["value"]
 
-def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) -> pd.DataFrame:
+def calculate_trunk_lean(frame_df: pd.DataFrame) -> pd.DataFrame:
     trunk_valid_columns = [
         "LEFT_SHOULDER_is_valid_landmark",
         "RIGHT_SHOULDER_is_valid_landmark",
@@ -558,26 +558,6 @@ def calculate_trunk_lean(frame_df: pd.DataFrame, direction_threshold_deg=0.5) ->
             ~frame_df["trunk_valid"],
             "trunk_lean_image_deg",
         ] = np.nan
-    
-
-    angle = frame_df["trunk_lean_image_deg"]
-    frame_df["trunk_lean_magnitude_deg"] = angle.abs()
-
-    frame_df["trunk_lean_image_direction"] = np.select(
-        [
-            angle > direction_threshold_deg,
-            angle < -direction_threshold_deg,
-        ],
-        [
-            "right",
-            "left",
-        ],
-        default="vertical"
-    )
-    frame_df.loc[
-        ~frame_df["trunk_valid"],
-        "trunk_lean_image_direction",
-    ] = "unknown"
 
     valid_hip_x = frame_df.loc[
         frame_df["trunk_valid"],
@@ -917,6 +897,10 @@ def main():
     csv_frame_table_path = Path(args.frame_table)
     plot_path = Path(args.plot)
     plot_path.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    csv_frame_table_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )

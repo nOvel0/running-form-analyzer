@@ -236,6 +236,21 @@ def main():
 
     source_video_path = Path(args.video)
     normalized_video_path = Path(args.normalized_video)
+    csv_path = Path(args.keypoints)
+    output_video_path = Path(args.output)
+    output_csv = Path(args.output_meta)
+    model_path = Path(args.model)
+
+    for output_path in (
+        csv_path,
+        output_video_path,
+        output_csv,
+        normalized_video_path,
+    ):
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
     target_fps = get_nominal_fps(source_video_path)
 
@@ -244,13 +259,6 @@ def main():
         output_path=normalized_video_path,
         target_fps=target_fps,
     )
-
-    csv_path = Path(args.keypoints)
-
-    output_video_path = Path(args.output)
-    output_csv = Path(args.output_meta)
-
-    model_path = Path(args.model)
 
     data_column = ['frame_index','timestamp_ms', 'pose_detected', 'pose_id', 'landmark_id','landmark_name','x','y','z','visibility','presence']
 
@@ -277,8 +285,7 @@ def main():
 
 
         if not out.isOpened():
-            print("Не удалось открыть выходное видео")
-            return
+            raise RuntimeError("Не удалось открыть выходное видео")
 
 
         print(fps, width, height)
@@ -336,14 +343,9 @@ def main():
                     cv2.COLOR_RGB2BGR
                 )
 
-                cv2.imshow('video', annotated_bgr)
-
                 out.write(annotated_bgr)
 
                 frame_index += 1 
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
 
             df = pd.DataFrame({
                 'frame_count': [frame_index],
@@ -362,8 +364,6 @@ def main():
 
         if detector is not None:
             detector.close()
-
-        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()

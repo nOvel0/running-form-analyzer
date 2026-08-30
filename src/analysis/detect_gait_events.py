@@ -7,6 +7,24 @@ from pathlib import Path
 from scipy.signal import find_peaks
 
 IC_TIME_OFFSET_MS = 35
+TOE_OFF_COLUMNS = [
+    "side",
+    "event_type",
+    "frame_index",
+    "timestamp_ms",
+    "ic_frame_index",
+    "next_ic_frame_index",
+    "ic_timestamp_ms",
+    "next_ic_timestamp_ms",
+    "stride_duration_ms",
+    "contact_time_ms",
+    "stance_phase_percent",
+    "foot_speed_norm_s",
+    "speed_threshold",
+    "max_foot_position_jump",
+    "is_tracking_stable",
+    "quality_reason"
+]
 
 def parse_arg():
     parser = argparse.ArgumentParser(
@@ -51,60 +69,13 @@ def parse_arg():
         required=True,
         help="Path to output contact foot csv file"
     )
-
-    return parser.parse_args()
-
-def detect_peaks(frame_table: pd.DataFrame, side, fps, distance_s=0.55, prominence=30):
-    if (side != "left") and ( side != "right"):
-        raise ValueError("Side должен быть left или right")
-
-    signal_column = f"{side}_knee_flexion_smooth"
-    df = frame_table.copy()
-
-    df["has_value"] = df[signal_column].notna()
-    df["group_id"] = df["has_value"].ne(df["has_value"].shift()).cumsum()
-
-    distance_frames = round(distance_s*fps)
-
-    result_parts = []
-
-    result_columns = [
-        "side",
-        "event_type",
-        "frame_index",
-        "timestamp_ms",
-        "flexion",
-        "prominence",
-    ]
-    
-    for _, segment in df[df["has_value"] == True].groupby("group_id"):
-        peak_index, properties = find_peaks(segment[signal_column], distance=distance_frames, prominence=prominence)
-        peak_rows = segment.iloc[peak_index]
-
-        new_rows = pd.DataFrame(
-        {
-            "side": [side] * len(peak_rows),
-            "event_type": ["max_knee_flexion"] * len(peak_rows),
-            "frame_index": peak_rows["frame_index"].to_numpy(),
-            "timestamp_ms": peak_rows["timestamp_ms"].to_numpy(),
-            "flexion": peak_rows[
-                signal_column
-            ].to_numpy(),
-            "prominence": properties["prominences"],
-        }
-        )
-
-        result_parts.append(new_rows)
-
-    if not result_parts:
-        return pd.DataFrame(columns=result_columns)
-
-    result = pd.concat(
-        result_parts,
-        ignore_index=True,
+    parser.add_argument(
+        "--toe_off",
+        type=str,
+        required=True
     )
 
-    return result
+    return parser.parse_args()
 
 def detect_cadence_peaks(frame_table : pd.DataFrame, fps, distance_s=0.273, prominence=10, edge_margin_ms=300):
     df = frame_table.copy()
@@ -334,7 +305,171 @@ def build_initial_contact_candidates(res_cadence: pd.DataFrame, frame_df: pd.Dat
     )
 
     return contact_candidates
-    
+
+def detect_toe_off(
+        frame_df: pd.DataFrame,
+        contact_cycles: pd.DataFrame,
+        search_start_ratio=0.3,
+        search_end_ratio=0.6,
+        threshold_ratio=0.2,
+        sustain_frames=3
+    ) -> pd.DataFrame:
+
+    result_rows = []
+
+    valid_cycles = contact_cycles.loc[
+        contact_cycles["is_valid_cycle"]
+    ].copy()
+
+    for _, cycle in valid_cycles.iterrows():
+        side = cycle["side"]
+
+        speed_column = f"{side}_foot_speed_norm_s"
+
+        start_timestamp_ms = cycle["start_timestamp_ms"]
+        end_timestamp_ms = cycle["end_timestamp_ms"]
+
+        stride_duration_ms = (
+            end_timestamp_ms
+            - start_timestamp_ms
+        )
+
+        cycle_frames = frame_df.loc[
+            frame_df["timestamp_ms"].between(
+                start_timestamp_ms,
+                end_timestamp_ms,
+                inclusive="both",
+            )
+        ].copy()
+
+        cycle_frames["foot_speed_smooth"] = (
+            cycle_frames[speed_column]
+            .rolling(
+                window=3,
+                center=True,
+                min_periods=1,
+            )
+            .median()
+        )
+
+        speed_signal = (
+            cycle_frames["foot_speed_smooth"]
+            .dropna()
+        )
+
+        if len(speed_signal) < sustain_frames:
+            continue
+
+        low_speed = speed_signal.quantile(0.10)
+        high_speed = speed_signal.quantile(0.90)
+
+        speed_range = high_speed - low_speed
+
+        if speed_range <= 0:
+            continue
+
+        threshold = (
+            low_speed
+            + threshold_ratio * speed_range
+        )
+
+        search_start_ms = (
+            start_timestamp_ms
+            + search_start_ratio * stride_duration_ms
+        )
+
+        search_end_ms = (
+            start_timestamp_ms
+            + search_end_ratio * stride_duration_ms
+        )
+
+        search_frames = cycle_frames.loc[
+            cycle_frames["timestamp_ms"].between(
+                search_start_ms,
+                search_end_ms,
+                inclusive="both",
+            )
+        ].copy()
+
+        position_column = f"{side}_foot_ahead_norm"
+
+        max_foot_position_jump = (
+            search_frames[position_column]
+            .diff()
+            .abs()
+            .max()
+        )
+
+        is_tracking_stable = (
+            pd.notna(max_foot_position_jump)
+            and max_foot_position_jump <= 0.30
+        )
+
+        above_threshold = (
+            search_frames["foot_speed_smooth"]
+            >= threshold
+        )
+
+        sustained = above_threshold.copy()
+
+        for shift in range(1, sustain_frames):
+            sustained &= above_threshold.shift(
+                -shift,
+                fill_value=False,
+            )
+
+        candidate_indexes = sustained[
+            sustained
+        ].index
+
+        if len(candidate_indexes) == 0:
+            continue
+
+        candidate_index = candidate_indexes[0]
+        candidate = search_frames.loc[candidate_index]
+
+        toe_off_timestamp_ms = candidate["timestamp_ms"]
+
+        result_rows.append({
+            "side": side,
+            "event_type": "toe_off_candidate",
+            "frame_index": int(candidate["frame_index"]),
+            "timestamp_ms": int(toe_off_timestamp_ms),
+
+            "ic_frame_index": int(cycle["start_frame"]),
+            "next_ic_frame_index": int(cycle["end_frame"]),
+
+            "ic_timestamp_ms": int(start_timestamp_ms),
+            "next_ic_timestamp_ms": int(end_timestamp_ms),
+
+            "stride_duration_ms": int(stride_duration_ms),
+
+            "contact_time_ms": int(
+                toe_off_timestamp_ms
+                - start_timestamp_ms
+            ),
+
+            "stance_phase_percent": (
+                (toe_off_timestamp_ms
+                - start_timestamp_ms) / stride_duration_ms * 100
+            ),
+
+            "foot_speed_norm_s": (
+                candidate["foot_speed_smooth"]
+            ),
+
+            "speed_threshold": threshold,
+            "max_foot_position_jump": max_foot_position_jump,
+            "is_tracking_stable": is_tracking_stable,
+            "quality_reason": (
+                "ok"
+                if is_tracking_stable
+                else "unstable_tracking"
+            ),
+        })
+
+    return pd.DataFrame(result_rows, columns=TOE_OFF_COLUMNS)
+
 def plot_diagnostic(frame_df : pd.DataFrame, events_df : pd.DataFrame, plot_path: Path):
     plt.figure(figsize=(12, 6))
 
@@ -412,7 +547,6 @@ def find_cycle_cadence(df: pd.DataFrame):
     result = result.reset_index(drop=True)
 
     return result
-
 
 def find_stride_cadence(events_df: pd.DataFrame):
     result_columns = [
@@ -938,17 +1072,8 @@ def stats_trunk_lean(frame_df: pd.DataFrame):
 
     q1_trunk_lean = valid_trunk_lean.quantile(0.25)
     q3_trunk_lean = valid_trunk_lean.quantile(0.75)
-    iqr_t = q3_trunk_lean - q1_trunk_lean
-
-    min_trunk_lean = valid_trunk_lean.min()
-    max_trunk_lean = valid_trunk_lean.max()
 
     std_trunk_lean = valid_trunk_lean.std()
-    mean_trunk_lean = valid_trunk_lean.mean()
-
-    cv_percent_trunk_lean = (
-        std_trunk_lean / mean_trunk_lean * 100
-    )
 
     val_direction = frame_df["running_direction"].iloc[0]
 
@@ -1017,6 +1142,152 @@ def stats_contact_cadence(contact_cycles: pd.DataFrame):
     if pd.notna(right_cadence):
         print(f"По правой ноге: {right_cadence:.1f} spm")
 
+def stats_contact(contact_stats: dict):
+    if contact_stats is None:
+        print("\nTO-кандидаты не найдены")
+    elif contact_stats["stable_count"] == 0:
+        print("\nСтабильные TO не найдены")
+    else:
+        print(f"\nОценочное время контакта: {contact_stats['median_contact_time_ms']:.0f} мс")
+        print(f"Центральные 50%: {contact_stats['q1_contact_time_ms']:.0f}–{contact_stats['q3_contact_time_ms']:.0f} мс")
+        print(f"Стабильных найденных TO: {contact_stats['stable_count']} из {contact_stats['total_count']}")
+        print(f"Доля опорной фазы: {contact_stats['median_stance_phase_percent']:.1f}%")
+
+        if contact_stats["left_contact_time_ms"] is not None:
+            print(f"Левая нога: {contact_stats['left_contact_time_ms']:.0f} мс")
+
+        if contact_stats["right_contact_time_ms"] is not None:
+            print(f"Правая нога: {contact_stats['right_contact_time_ms']:.0f} мс")
+
+        if contact_stats["contact_asymmetry_percent"] is None:
+            print(f"Асимметрия времени контакта: недостаточно надёжных циклов")
+        else:
+            print(f"Асимметрия времени контакта: {contact_stats['contact_asymmetry_percent']:.1f}%")
+
+
+def calculate_contact_stats(toe_off_df: pd.DataFrame) -> dict | None:
+    if toe_off_df.empty:
+        return None
+
+    required_columns = {
+        "side",
+        "contact_time_ms",
+        "stride_duration_ms",
+        "is_tracking_stable",
+    }
+
+    missing_columns = required_columns - set(toe_off_df.columns)
+    if missing_columns:
+        raise ValueError(
+            "Для статистики времени контакта отсутствуют столбцы: "
+            f"{sorted(missing_columns)}"
+        )
+
+    total_count = len(toe_off_df)
+
+    stable_toe_offs = toe_off_df.loc[
+        toe_off_df["is_tracking_stable"].eq(True)
+    ].copy()
+
+    stable_toe_offs["contact_time_ms"] = pd.to_numeric(
+        stable_toe_offs["contact_time_ms"],
+        errors="coerce",
+    )
+    stable_toe_offs["stride_duration_ms"] = pd.to_numeric(
+        stable_toe_offs["stride_duration_ms"],
+        errors="coerce",
+    )
+
+    stable_toe_offs = stable_toe_offs.dropna(
+        subset=["contact_time_ms", "stride_duration_ms"]
+    ).copy()
+
+    stable_toe_offs = stable_toe_offs.loc[
+        (stable_toe_offs["contact_time_ms"] > 0)
+        & (stable_toe_offs["stride_duration_ms"] > 0)
+        & (
+            stable_toe_offs["contact_time_ms"]
+            < stable_toe_offs["stride_duration_ms"]
+        )
+    ].copy()
+
+    stable_toe_offs["stance_phase_percent"] = (
+        stable_toe_offs["contact_time_ms"]
+        / stable_toe_offs["stride_duration_ms"]
+        * 100
+    )
+
+    stable_count = len(stable_toe_offs)
+
+    empty_stats = {
+        "stable_count": stable_count,
+        "total_count": total_count,
+        "median_contact_time_ms": None,
+        "q1_contact_time_ms": None,
+        "q3_contact_time_ms": None,
+        "median_stance_phase_percent": None,
+        "left_contact_time_ms": None,
+        "right_contact_time_ms": None,
+        "contact_asymmetry_percent": None,
+    }
+
+    if stable_toe_offs.empty:
+        return empty_stats
+
+    contact_times = stable_toe_offs["contact_time_ms"]
+
+    left_contact_times = stable_toe_offs.loc[
+        stable_toe_offs["side"].astype(str).str.lower().eq("left"),
+        "contact_time_ms",
+    ]
+    right_contact_times = stable_toe_offs.loc[
+        stable_toe_offs["side"].astype(str).str.lower().eq("right"),
+        "contact_time_ms",
+    ]
+
+    left_contact_time_ms = (
+        float(left_contact_times.median())
+        if not left_contact_times.empty
+        else None
+    )
+    right_contact_time_ms = (
+        float(right_contact_times.median())
+        if not right_contact_times.empty
+        else None
+    )
+
+    contact_asymmetry_percent = None
+    if (
+        len(left_contact_times) >= 2
+        and len(right_contact_times) >= 2
+        and left_contact_time_ms is not None
+        and right_contact_time_ms is not None
+    ):
+        mean_contact_time_ms = (
+            left_contact_time_ms + right_contact_time_ms
+        ) / 2
+
+        if mean_contact_time_ms > 0:
+            contact_asymmetry_percent = (
+                abs(left_contact_time_ms - right_contact_time_ms)
+                / mean_contact_time_ms
+                * 100
+            )
+
+    return {
+        "stable_count": stable_count,
+        "total_count": total_count,
+        "median_contact_time_ms": float(contact_times.median()),
+        "q1_contact_time_ms": float(contact_times.quantile(0.25)),
+        "q3_contact_time_ms": float(contact_times.quantile(0.75)),
+        "median_stance_phase_percent": float(
+            stable_toe_offs["stance_phase_percent"].median()
+        ),
+        "left_contact_time_ms": left_contact_time_ms,
+        "right_contact_time_ms": right_contact_time_ms,
+        "contact_asymmetry_percent": contact_asymmetry_percent,
+    }
+
 def main():
     args = parse_arg()
 
@@ -1026,6 +1297,19 @@ def main():
     plot_path = Path(args.plot)
     csv_cycle_path = Path(args.cycle)
     csv_contact_path = Path(args.contact_foot)
+    csv_toe_off_path = Path(args.toe_off)
+
+    for output_path in (
+        csv_event_path,
+        plot_path,
+        csv_cycle_path,
+        csv_contact_path,
+        csv_toe_off_path,
+    ):
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
 
     frame_table = pd.read_csv(str(csv_path))
     df_meta = pd.read_csv(str(csv_meta_path))
@@ -1056,6 +1340,13 @@ def main():
         contact_candidates
     )
 
+    toe_off_candidates = detect_toe_off(
+        frame_table,
+        contact_cadence_cycles,
+    )
+
+    contact_stats = calculate_contact_stats(toe_off_candidates)
+
     quality_cycle_count = int(
         res_cadence["is_high_quality"].sum()
     )
@@ -1065,6 +1356,7 @@ def main():
         f"{quality_cycle_count}"
     )
     stats_contact_cadence(contact_cadence_cycles)
+    stats_contact(contact_stats)
     stats_trunk_lean(frame_table)
     stats_knee_amplitude(res_cadence)
     stats_hip_amplitude(res_cadence)
@@ -1075,7 +1367,7 @@ def main():
     result.to_csv(str(csv_event_path), index=False)
     res_cadence.to_csv(str(csv_cycle_path), index=False)
     contact_candidates.to_csv(str(csv_contact_path), index=False)
+    toe_off_candidates.to_csv(str(csv_toe_off_path), index=False)
 
 if __name__ == "__main__":
     main()
-
