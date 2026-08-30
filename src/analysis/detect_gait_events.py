@@ -6,6 +6,8 @@ import numpy as np
 from pathlib import Path
 from scipy.signal import find_peaks
 
+IC_TIME_OFFSET_MS = 35
+
 def parse_arg():
     parser = argparse.ArgumentParser(
         description="Find gait events"
@@ -247,14 +249,38 @@ def detect_initial_contacts(
 
         peak_rows = segment.iloc[peak_positions]
 
+        offset_frames = round(
+            fps * IC_TIME_OFFSET_MS / 1000
+        )
+
+        contact_positions = np.minimum(
+            peak_positions + offset_frames,
+            len(segment) - 1,
+        )
+
+        contact_rows = segment.iloc[contact_positions]
+
         result_parts.append(
             pd.DataFrame({
                 "side": side,
                 "event_type": "initial_contact_candidate",
-                "frame_index": peak_rows["frame_index"].to_numpy(),
-                "timestamp_ms": peak_rows["timestamp_ms"].to_numpy(),
-                "foot_ahead_norm": peak_rows[signal_column].to_numpy(),
+                "peak_frame_index": (
+                    peak_rows["frame_index"].to_numpy()
+                ),
+                "peak_timestamp_ms": (
+                    peak_rows["timestamp_ms"].to_numpy()
+                ),
+                "frame_index": (
+                    contact_rows["frame_index"].to_numpy()
+                ),
+                "timestamp_ms": (
+                    contact_rows["timestamp_ms"].to_numpy()
+                ),
+                "foot_ahead_norm": (
+                    peak_rows[signal_column].to_numpy()
+                ),
                 "prominence": properties["prominences"],
+                "ic_offset_frames": offset_frames,
             })
         )
 
@@ -366,11 +392,13 @@ def find_cycle_cadence(df: pd.DataFrame):
         120_000 / result["stride_duration_ms"]
     )
 
-    result["is_valid_cycle"] = True
-    result.loc[
-        (result["cadence_spm"] <= 120) | (result["cadence_spm"] >= 220),
-        "is_valid_cycle"
-    ] = False
+    result["is_valid_cycle"] = (
+        result["cadence_spm"].between(
+            120,
+            220,
+            inclusive="both",
+        )
+    )
     
     result = result.dropna(
         subset=["end_frame", "end_timestamp_ms"]
@@ -938,46 +966,56 @@ def stats_trunk_lean(frame_df: pd.DataFrame):
     print(f"Стандартное отклонение: {std_trunk_lean:.1f}°")
     print(f"Направление бега: {direction}")
 
-def stats_cadence(result: pd.DataFrame):
-    valid_cadence = result.loc[
-        result["is_high_quality"] == True,
-        "cadence_spm",
-    ]
+def stats_contact_cadence(contact_cycles: pd.DataFrame):
+    valid_cycles = contact_cycles.loc[
+        contact_cycles["is_valid_cycle"]
+    ].copy()
 
-    if valid_cadence.empty:
-        print("High-quality циклы не найдены")
+    if valid_cycles.empty:
+        print("\nКаденс по IC определить невозможно")
         return
 
-    median_cadence = valid_cadence.median()
+    cadence_values = valid_cycles["cadence_spm"]
 
-    high_quality_count = len(valid_cadence)
+    median_cadence = cadence_values.median()
+    min_cadence = cadence_values.min()
+    max_cadence = cadence_values.max()
 
-    q1 = valid_cadence.quantile(0.25)
-    q3 = valid_cadence.quantile(0.75)
-    iqr = q3 - q1
-
-    min_cad = valid_cadence.min()
-    max_cad = valid_cadence.max()
-
-    std_cadence = valid_cadence.std()
-
-    mean_cadence = valid_cadence.mean()
-
-    cv_percent = (
-        std_cadence / mean_cadence * 100
+    left_cadence = (
+        valid_cycles.loc[
+            valid_cycles["side"] == "left",
+            "cadence_spm",
+        ]
+        .median()
     )
 
-    print("\n")
-    print(f"Каденс: {median_cadence:.1f}")
-    print(f"Качественных циклов: {high_quality_count}")
-    print(f"Q1(25%): {q1:.1f} spm")
-    print(f"Q3(75%): {q3:.1f} spm")
-    print(f"Центральные 50%: {q1:.1f}-{q3:.1f} spm")
-    print(f"IQR: {iqr:.1f} spm")
-    print(f"Диапазон: {min_cad:.1f} - {max_cad:.1f}") 
-    print(f"Стандартное отклонение: {std_cadence:.1f} spm")
-    print(f"Коэффициент вариации: {cv_percent:.1f}%")
+    right_cadence = (
+        valid_cycles.loc[
+            valid_cycles["side"] == "right",
+            "cadence_spm",
+        ]
+        .median()
+    )
 
+    if len(valid_cycles) < 2:
+        print(
+            "Предупреждение: слишком мало IC-циклов "
+            "для устойчивой оценки каденса"
+        )
+
+    print("\n")
+    print(f"Итоговый каденс по IC: {median_cadence:.1f} spm")
+    print(f"Валидных IC-циклов: {len(valid_cycles)}")
+    print(
+        f"Диапазон: "
+        f"{min_cadence:.1f}-{max_cadence:.1f} spm"
+    )
+
+    if pd.notna(left_cadence):
+        print(f"По левой ноге: {left_cadence:.1f} spm")
+
+    if pd.notna(right_cadence):
+        print(f"По правой ноге: {right_cadence:.1f} spm")
 
 def main():
     args = parse_arg()
@@ -1014,8 +1052,19 @@ def main():
     res_cadence = hip_amplitude(res_cadence, frame_table)
     res_cadence = ankle_metrics(res_cadence, frame_table)
     contact_candidates = build_initial_contact_candidates(res_cadence, frame_table, fps)
+    contact_cadence_cycles = find_cycle_cadence(
+        contact_candidates
+    )
 
-    stats_cadence(res_cadence)
+    quality_cycle_count = int(
+        res_cadence["is_high_quality"].sum()
+    )
+
+    print(
+        f"\nКачественных циклов для угловых метрик: "
+        f"{quality_cycle_count}"
+    )
+    stats_contact_cadence(contact_cadence_cycles)
     stats_trunk_lean(frame_table)
     stats_knee_amplitude(res_cadence)
     stats_hip_amplitude(res_cadence)

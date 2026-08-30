@@ -7,3 +7,4 @@ data/processed_videos/
 data/normalized_video/
 data/keypoints/
 data/reports/
+src/analysis/evaluate_initial_contacts.py
