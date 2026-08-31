@@ -74,6 +74,11 @@ def parse_arg():
         type=str,
         required=True
     )
+    parser.add_argument(
+        "--cadence",
+        type=str,
+        required=True
+    )
 
     return parser.parse_args()
 
@@ -1298,6 +1303,7 @@ def main():
     csv_cycle_path = Path(args.cycle)
     csv_contact_path = Path(args.contact_foot)
     csv_toe_off_path = Path(args.toe_off)
+    csv_contact_cadence_cycles_path = Path(args.cadence)
 
     for output_path in (
         csv_event_path,
@@ -1305,6 +1311,7 @@ def main():
         csv_cycle_path,
         csv_contact_path,
         csv_toe_off_path,
+        csv_contact_cadence_cycles_path,
     ):
         output_path.parent.mkdir(
             parents=True,
@@ -1368,6 +1375,7 @@ def main():
     res_cadence.to_csv(str(csv_cycle_path), index=False)
     contact_candidates.to_csv(str(csv_contact_path), index=False)
     toe_off_candidates.to_csv(str(csv_toe_off_path), index=False)
+    contact_cadence_cycles.to_csv(str(csv_contact_cadence_cycles_path), index=False)
 
 if __name__ == "__main__":
     main()
